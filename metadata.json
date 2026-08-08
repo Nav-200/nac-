@@ -1,0 +1,5 @@
+{
+  "name": "navQtracker Hardware Simulator",
+  "description": "A simulator for an ESP32-based question tracker with OLED display, push buttons, and IR sensor integration.",
+  "requestFramePermissions": []
+}
