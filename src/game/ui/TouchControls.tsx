@@ -1,4 +1,5 @@
 import React, { useCallback, useRef } from 'react';
+import { clamp } from '../engine/math';
 import type { Input } from '../engine/input';
 
 interface Props {
@@ -6,6 +7,8 @@ interface Props {
   onPause: () => void;
   onCamera: () => void;
   visible: boolean;
+  /** With auto-throttle on, the big right-thumb button is nitro, not gas. */
+  autoThrottle: boolean;
 }
 
 const PAD_BASE =
@@ -21,7 +24,13 @@ const PAD_BASE =
  * means a thumb that slides off a pedal still releases it, which is the usual
  * way touch controls go wrong.
  */
-export const TouchControls: React.FC<Props> = ({ input, onPause, onCamera, visible }) => {
+export const TouchControls: React.FC<Props> = ({
+  input,
+  onPause,
+  onCamera,
+  visible,
+  autoThrottle,
+}) => {
   const activePointers = useRef(new Map<number, string>());
 
   const press = useCallback(
@@ -30,12 +39,6 @@ export const TouchControls: React.FC<Props> = ({ input, onPause, onCamera, visib
       e.currentTarget.setPointerCapture?.(e.pointerId);
       activePointers.current.set(e.pointerId, control);
       switch (control) {
-        case 'left':
-          input.setSteerInput(-1);
-          break;
-        case 'right':
-          input.setSteerInput(1);
-          break;
         case 'throttle':
           input.setThrottleInput(1);
           break;
@@ -44,6 +47,9 @@ export const TouchControls: React.FC<Props> = ({ input, onPause, onCamera, visib
           break;
         case 'handbrake':
           input.setHandbrakeInput(true);
+          break;
+        case 'nitro':
+          input.setNitroInput(true);
           break;
       }
     },
@@ -57,14 +63,6 @@ export const TouchControls: React.FC<Props> = ({ input, onPause, onCamera, visib
       const stillHeld = [...activePointers.current.values()].includes(control);
       if (stillHeld) return;
       switch (control) {
-        case 'left':
-        case 'right': {
-          // Only centre if neither direction is held by another finger.
-          const held = [...activePointers.current.values()];
-          if (!held.includes('left') && !held.includes('right')) input.setSteerInput(0);
-          else input.setSteerInput(held.includes('left') ? -1 : 1);
-          break;
-        }
         case 'throttle':
           input.setThrottleInput(0);
           break;
@@ -74,6 +72,60 @@ export const TouchControls: React.FC<Props> = ({ input, onPause, onCamera, visib
         case 'handbrake':
           input.setHandbrakeInput(false);
           break;
+        case 'nitro':
+          input.setNitroInput(false);
+          break;
+      }
+    },
+    [input],
+  );
+
+  const stripRef = useRef<HTMLDivElement>(null);
+  const knobRef = useRef<HTMLDivElement>(null);
+  const stripPointer = useRef<number | null>(null);
+
+  const applyStrip = useCallback(
+    (clientX: number) => {
+      const strip = stripRef.current;
+      if (!strip) return;
+      const rect = strip.getBoundingClientRect();
+      const half = rect.width / 2 - 28;
+      const rel = clamp((clientX - (rect.left + rect.width / 2)) / half, -1, 1);
+      input.setSteerInput(rel);
+      if (knobRef.current) {
+        knobRef.current.style.transform = `translate(calc(-50% + ${rel * half}px), -50%)`;
+      }
+    },
+    [input],
+  );
+
+  const onStripDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      stripPointer.current = e.pointerId;
+      applyStrip(e.clientX);
+    },
+    [applyStrip],
+  );
+
+  const onStripMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (stripPointer.current !== e.pointerId) return;
+      e.preventDefault();
+      applyStrip(e.clientX);
+    },
+    [applyStrip],
+  );
+
+  const onStripUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (stripPointer.current !== e.pointerId) return;
+      e.preventDefault();
+      stripPointer.current = null;
+      input.setSteerInput(0);
+      if (knobRef.current) {
+        knobRef.current.style.transform = 'translate(-50%, -50%)';
       }
     },
     [input],
@@ -97,25 +149,33 @@ export const TouchControls: React.FC<Props> = ({ input, onPause, onCamera, visib
         paddingBottom: 'env(safe-area-inset-bottom)',
       }}
     >
-      {/* Steering, left thumb. */}
-      <div className="absolute bottom-5 left-4 flex items-end gap-3 sm:bottom-8 sm:left-7">
-        <button
-          aria-label="Steer left"
-          {...bind('left')}
-          className={`${PAD_BASE} h-20 w-20 border-white/25 bg-white/10 text-white/90 active:bg-cyan-300/35 sm:h-24 sm:w-24`}
-        >
+      {/* Steering: an analog drag strip for the left thumb. Sliding the thumb
+          maps X within the strip to steering, so precision comes from travel,
+          not from tapping. Writes go straight to Input and a knob is moved via
+          direct DOM style — no React state in the loop. */}
+      <div
+        aria-label="Steering strip"
+        onPointerDown={onStripDown}
+        onPointerMove={onStripMove}
+        onPointerUp={onStripUp}
+        onPointerCancel={onStripUp}
+        onContextMenu={(e) => e.preventDefault()}
+        ref={stripRef}
+        className="pointer-events-auto absolute bottom-6 left-4 flex h-20 w-56 touch-none items-center justify-between rounded-full border border-white/20 bg-white/8 px-4 backdrop-blur-md select-none sm:bottom-8 sm:left-7 sm:h-24 sm:w-64"
+      >
+        <span className="text-white/60">
           <Chevron direction="left" />
-        </button>
-        <button
-          aria-label="Steer right"
-          {...bind('right')}
-          className={`${PAD_BASE} h-20 w-20 border-white/25 bg-white/10 text-white/90 active:bg-cyan-300/35 sm:h-24 sm:w-24`}
-        >
+        </span>
+        <div
+          ref={knobRef}
+          className="pointer-events-none absolute top-1/2 left-1/2 h-14 w-14 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-200/50 bg-cyan-300/25 transition-transform duration-75 sm:h-16 sm:w-16"
+        />
+        <span className="text-white/60">
           <Chevron direction="right" />
-        </button>
+        </span>
       </div>
 
-      {/* Pedals, right thumb. */}
+      {/* Pedals, right thumb. With auto-throttle the big button becomes nitro. */}
       <div className="absolute right-4 bottom-5 flex items-end gap-3 sm:right-7 sm:bottom-8">
         <div className="flex flex-col gap-3">
           <button
@@ -125,6 +185,15 @@ export const TouchControls: React.FC<Props> = ({ input, onPause, onCamera, visib
           >
             E‑BRK
           </button>
+          {!autoThrottle && (
+            <button
+              aria-label="Nitro"
+              {...bind('nitro')}
+              className={`${PAD_BASE} h-14 w-14 border-sky-200/45 bg-sky-400/20 text-[10px] font-black tracking-widest text-sky-50 active:bg-sky-400/55 sm:h-16 sm:w-16`}
+            >
+              NOS
+            </button>
+          )}
           <button
             aria-label="Brake"
             {...bind('brake')}
@@ -133,13 +202,23 @@ export const TouchControls: React.FC<Props> = ({ input, onPause, onCamera, visib
             BRAKE
           </button>
         </div>
-        <button
-          aria-label="Accelerate"
-          {...bind('throttle')}
-          className={`${PAD_BASE} h-24 w-24 border-emerald-200/45 bg-emerald-400/25 text-sm font-black tracking-wider text-emerald-50 active:bg-emerald-400/55 sm:h-28 sm:w-28`}
-        >
-          GO
-        </button>
+        {autoThrottle ? (
+          <button
+            aria-label="Nitro"
+            {...bind('nitro')}
+            className={`${PAD_BASE} h-24 w-24 border-sky-200/45 bg-sky-400/25 text-sm font-black tracking-wider text-sky-50 active:bg-sky-400/60 sm:h-28 sm:w-28`}
+          >
+            NITRO
+          </button>
+        ) : (
+          <button
+            aria-label="Accelerate"
+            {...bind('throttle')}
+            className={`${PAD_BASE} h-24 w-24 border-emerald-200/45 bg-emerald-400/25 text-sm font-black tracking-wider text-emerald-50 active:bg-emerald-400/55 sm:h-28 sm:w-28`}
+          >
+            GO
+          </button>
+        )}
       </div>
 
       {/* Utility buttons, out of the way of both thumbs. */}

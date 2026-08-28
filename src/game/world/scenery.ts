@@ -87,6 +87,58 @@ const buildPost = (): THREE.BufferGeometry =>
     },
   ]);
 
+const COLLIDER_CELL = 16;
+
+/**
+ * Static circle colliders for everything solid in the world, packed as flat
+ * CSR typed arrays over a uniform grid (the same trick `Road.query` uses), so
+ * the per-step query walks a few dozen floats and allocates nothing.
+ */
+export class ColliderGrid {
+  readonly x: Float32Array;
+  readonly z: Float32Array;
+  readonly radius: Float32Array;
+  /** 1 = hard stop, 0 = soft drag (bushes). */
+  readonly hard: Uint8Array;
+  readonly cellStart: Int32Array;
+  readonly cellItems: Int32Array;
+  readonly dim: number;
+  readonly origin = -MAP_HALF;
+
+  constructor(items: Array<{ x: number; z: number; r: number; hard: boolean }>) {
+    const n = items.length;
+    this.x = new Float32Array(n);
+    this.z = new Float32Array(n);
+    this.radius = new Float32Array(n);
+    this.hard = new Uint8Array(n);
+    this.dim = Math.ceil((MAP_HALF * 2) / COLLIDER_CELL) + 1;
+
+    const cells = this.dim * this.dim;
+    const counts = new Int32Array(cells + 1);
+    const cellOf = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+      const it = items[i];
+      this.x[i] = it.x;
+      this.z[i] = it.z;
+      this.radius[i] = it.r;
+      this.hard[i] = it.hard ? 1 : 0;
+      const c = this.cellIndex(it.z) * this.dim + this.cellIndex(it.x);
+      cellOf[i] = c;
+      counts[c + 1]++;
+    }
+    for (let c = 0; c < cells; c++) counts[c + 1] += counts[c];
+    this.cellStart = counts;
+    this.cellItems = new Int32Array(n);
+    const cursor = Int32Array.from(counts.subarray(0, cells));
+    for (let i = 0; i < n; i++) this.cellItems[cursor[cellOf[i]]++] = i;
+  }
+
+  cellIndex(v: number): number {
+    const i = Math.floor((v - this.origin) / COLLIDER_CELL);
+    return i < 0 ? 0 : i >= this.dim ? this.dim - 1 : i;
+  }
+}
+
 /**
  * Everything scattered across the landscape. Each prop type is instanced and
  * split by map region, which keeps the draw-call count low while still letting
@@ -94,10 +146,17 @@ const buildPost = (): THREE.BufferGeometry =>
  */
 export class Scenery {
   readonly group = new THREE.Group();
+  colliders: ColliderGrid;
+  private colliderItems: Array<{ x: number; z: number; r: number; hard: boolean }> = [];
   private geometries: THREE.BufferGeometry[] = [];
   private material: THREE.MeshLambertMaterial;
 
-  constructor(road: Road, terrain: Terrain, quality: QualitySettings) {
+  constructor(
+    road: Road,
+    terrain: Terrain,
+    quality: QualitySettings,
+    waterLevel: number | null = null,
+  ) {
     this.group.name = 'scenery';
     this.material = new THREE.MeshLambertMaterial({ vertexColors: true });
 
@@ -129,6 +188,7 @@ export class Scenery {
 
         const y = terrain.heightAt(x, z);
         if (y > 112) continue;
+        if (waterLevel !== null && y < waterLevel + 0.4) continue;
 
         // Denser near the road: that is where the player's eye actually is, and
         // close-passing trees are what sell the speed.
@@ -138,19 +198,13 @@ export class Scenery {
         if (roll > chance) {
           // Even where trees do not land, drop the odd rock or bush.
           if (roll > 0.955) {
-            rocks.push({
-              x, z, y,
-              rotation: rng() * TAU,
-              scale: 0.6 + rng() * 1.8,
-              tint: 0.85 + rng() * 0.3,
-            });
+            const scale = 0.6 + rng() * 1.8;
+            rocks.push({ x, z, y, rotation: rng() * TAU, scale, tint: 0.85 + rng() * 0.3 });
+            this.colliderItems.push({ x, z, r: scale * 0.95, hard: true });
           } else if (roll > 0.9) {
-            bushes.push({
-              x, z, y,
-              rotation: rng() * TAU,
-              scale: 0.7 + rng() * 0.9,
-              tint: 0.8 + rng() * 0.45,
-            });
+            const scale = 0.7 + rng() * 0.9;
+            bushes.push({ x, z, y, rotation: rng() * TAU, scale, tint: 0.8 + rng() * 0.45 });
+            this.colliderItems.push({ x, z, r: scale * 1.0, hard: false });
           }
           continue;
         }
@@ -163,7 +217,9 @@ export class Scenery {
           scale: 0.75 + rng() * 0.75,
           tint: 0.82 + rng() * 0.4,
         };
-        // Conifers take over as the ground climbs.
+        // Conifers take over as the ground climbs. The collider is the trunk,
+        // not the canopy, so brushing foliage does not read as hitting a wall.
+        this.colliderItems.push({ x, z, r: 0.34 + p.scale * 0.22, hard: true });
         if (rng() < clamp01(0.25 + y / 90)) pines.push(p);
         else broadleaves.push(p);
       }
@@ -174,6 +230,24 @@ export class Scenery {
     this.addRegionedType(buildRock(), rocks);
     this.addRegionedType(buildBush(), bushes);
     this.addRoadPosts(road, terrain);
+
+    this.colliders = new ColliderGrid(this.colliderItems);
+    this.colliderItems.length = 0;
+  }
+
+  /** Lets later-built props (barriers, arch pillars) join the same grid. */
+  registerColliders(items: Array<{ x: number; z: number; r: number; hard: boolean }>): void {
+    const merged: Array<{ x: number; z: number; r: number; hard: boolean }> = [];
+    for (let i = 0; i < this.colliders.x.length; i++) {
+      merged.push({
+        x: this.colliders.x[i],
+        z: this.colliders.z[i],
+        r: this.colliders.radius[i],
+        hard: this.colliders.hard[i] === 1,
+      });
+    }
+    merged.push(...items);
+    this.colliders = new ColliderGrid(merged);
   }
 
   /** Marker posts every few metres; cheap, and they make speed legible. */

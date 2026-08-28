@@ -12,6 +12,14 @@ export class Input {
   throttle = 0;
   brake = 0;
   handbrake = false;
+  nitro = false;
+  /** When on, the throttle is held for the player unless they brake. */
+  autoThrottle = false;
+
+  // Touch-owned button state, kept apart from the merged outputs above so a
+  // keyboard press can never latch through the feedback of its own output.
+  private touchHandbrake = false;
+  private touchNitro = false;
 
   private steerTarget = 0;
   private throttleTarget = 0;
@@ -60,7 +68,11 @@ export class Input {
   }
 
   setHandbrakeInput(down: boolean): void {
-    this.handbrake = down;
+    this.touchHandbrake = down;
+  }
+
+  setNitroInput(down: boolean): void {
+    this.touchNitro = down;
   }
 
   pressCamera(): void {
@@ -90,6 +102,9 @@ export class Input {
     this.throttleTarget = 0;
     this.brakeTarget = 0;
     this.handbrake = false;
+    this.nitro = false;
+    this.touchHandbrake = false;
+    this.touchNitro = false;
   };
 
   // --- Tilt ----------------------------------------------------------------
@@ -159,7 +174,13 @@ export class Input {
     this.keys.delete(e.code);
   };
 
-  private keyAxis(): { steer: number; throttle: number; brake: number; hb: boolean } {
+  private keyAxis(): {
+    steer: number;
+    throttle: number;
+    brake: number;
+    hb: boolean;
+    nitro: boolean;
+  } {
     const k = this.keys;
     const left = k.has('ArrowLeft') || k.has('KeyA') ? 1 : 0;
     const right = k.has('ArrowRight') || k.has('KeyD') ? 1 : 0;
@@ -170,6 +191,7 @@ export class Input {
       throttle: up,
       brake: down,
       hb: k.has('Space'),
+      nitro: k.has('ShiftLeft') || k.has('ShiftRight'),
     };
   }
 
@@ -180,9 +202,14 @@ export class Input {
     if (kb.steer !== 0) steerTarget = kb.steer;
     else if (this.tiltEnabled && Math.abs(this.tiltSteer) > 0.06) steerTarget = this.tiltSteer;
 
-    const throttleTarget = Math.max(this.throttleTarget, kb.throttle);
+    let throttleTarget = Math.max(this.throttleTarget, kb.throttle);
     const brakeTarget = Math.max(this.brakeTarget, kb.brake);
-    const handbrake = this.handbrake || kb.hb;
+    const handbrake = this.touchHandbrake || kb.hb;
+    const nitro = this.touchNitro || kb.nitro;
+
+    // Auto-throttle: full gas unless the player is braking. Standard mobile
+    // racer accessibility — it frees the right thumb for brake and nitro.
+    if (this.autoThrottle && brakeTarget < 0.05) throttleTarget = 1;
 
     // Springing back to centre faster than winding on is what makes a two-button
     // steering scheme feel like a wheel rather than a switch.
@@ -194,5 +221,6 @@ export class Input {
     this.throttle = moveToward(this.throttle, throttleTarget, 5 * dt);
     this.brake = moveToward(this.brake, brakeTarget, 8 * dt);
     this.handbrake = handbrake;
+    this.nitro = nitro;
   }
 }

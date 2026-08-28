@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { clamp01, lerp, smoothstep, valueNoise2 } from '../engine/math';
 import { baseTerrainHeight, MAP_HALF, MAP_SIZE } from './heightfield';
 import { makeRoadHit, type Road } from './road';
+import type { LakeSite } from './water';
 
 const CHUNKS = 6;
 const SEGS_PER_CHUNK = 32;
@@ -14,6 +15,7 @@ const FLAT_RADIUS = 8.2;
 /** Distance where the terrain has fully returned to its natural shape. */
 const BLEND_RADIUS = 36;
 
+const SAND = new THREE.Color(0xc9b382);
 const GRASS = new THREE.Color(0x5f7f42);
 const GRASS_DRY = new THREE.Color(0x8a9a4e);
 const DIRT = new THREE.Color(0x7a6647);
@@ -30,7 +32,7 @@ export class Terrain {
   readonly group = new THREE.Group();
   private material: THREE.MeshLambertMaterial;
 
-  constructor(road: Road) {
+  constructor(road: Road, private lake: LakeSite | null = null) {
     this.heights = new Float32Array(VERTS * VERTS);
     this.group.name = 'terrain';
 
@@ -47,6 +49,17 @@ export class Terrain {
           // 0 at the centreline, 1 out at the blend radius.
           const t = smoothstep(FLAT_RADIUS, BLEND_RADIUS, hit.dist);
           h = lerp(hit.height, base, t);
+        }
+
+        // Carve the lake basin: a smooth bowl dipping below the water level,
+        // done here in the height grid so physics, scenery and skids all see
+        // the same ground the GPU draws.
+        if (lake) {
+          const lr = Math.hypot(x - lake.x, z - lake.z) / lake.radius;
+          if (lr < 1.25) {
+            const bowl = smoothstep(1.25, 0.45, lr);
+            h = Math.min(h, lerp(h, lake.level - 3.2, bowl));
+          }
         }
         this.heights[iz * VERTS + ix] = h;
       }
@@ -150,6 +163,14 @@ export class Terrain {
 
     // Worn ground beside the tarmac.
     out.lerp(DIRT, smoothstep(26, 9, roadDist) * 0.75);
+
+    // A sandy shore ring just above the waterline.
+    if (this.lake) {
+      const lr = Math.hypot(x - this.lake.x, z - this.lake.z);
+      if (lr < this.lake.radius * 1.3) {
+        out.lerp(SAND, smoothstep(2.6, 0.4, Math.abs(h - this.lake.level - 0.5)));
+      }
+    }
   }
 
   private normalAtIndex(ix: number, iz: number, out: THREE.Vector3): THREE.Vector3 {

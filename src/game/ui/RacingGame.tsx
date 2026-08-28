@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Game } from '../Game';
-import { CARS, type CarSpec, type GamePhase, type QualityTier } from '../types';
+import type { RivalResult } from '../race/opponents';
+import { eventById } from '../race/route';
+import { loadSettings, saveSettings, type StoredSettings } from '../settings';
+import { CARS, type GamePhase, type QualityTier } from '../types';
 import type { TimeOfDay } from '../world/sky';
 import { Hud } from './Hud';
 import { LoadingScreen, PauseOverlay, ResultsOverlay, StartScreen } from './Menu';
@@ -15,24 +18,96 @@ const guessQuality = (): QualityTier => {
   return 'high';
 };
 
+const resolveTier = (setting: StoredSettings['quality']): QualityTier =>
+  setting === 'auto' ? guessQuality() : setting;
+
+/**
+ * Browser niceties that only work from a user gesture, and only outside a
+ * sandboxed iframe. Every one is a best-effort no-op on failure.
+ */
+const enterImmersiveMode = (): void => {
+  try {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.()?.catch(() => undefined);
+    }
+  } catch {
+    // Sandboxed or unsupported.
+  }
+  try {
+    type Lockable = { lock?: (o: string) => Promise<void> };
+    (screen.orientation as unknown as Lockable)?.lock?.('landscape')?.catch(() => undefined);
+  } catch {
+    // Desktop browsers throw synchronously; that is fine.
+  }
+};
+
+/** Keeps the screen awake while driving; harmless where unsupported. */
+const useWakeLock = (active: boolean): void => {
+  useEffect(() => {
+    if (!active) return;
+    type WakeLockSentinel = { release?: () => Promise<void> };
+    type WakeLockNav = Navigator & {
+      wakeLock?: { request: (t: string) => Promise<WakeLockSentinel> };
+    };
+    let sentinel: WakeLockSentinel | null = null;
+    let disposed = false;
+
+    const acquire = () => {
+      try {
+        (navigator as WakeLockNav).wakeLock
+          ?.request('screen')
+          .then((s) => {
+            if (disposed) void s.release?.();
+            else sentinel = s;
+          })
+          .catch(() => undefined);
+      } catch {
+        // Unsupported.
+      }
+    };
+
+    const onVisibility = () => {
+      if (!document.hidden) acquire();
+    };
+
+    acquire();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      disposed = true;
+      document.removeEventListener('visibilitychange', onVisibility);
+      void sentinel?.release?.();
+    };
+  }, [active]);
+};
+
 export const RacingGame: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameRef = useRef<Game | null>(null);
 
   const [ready, setReady] = useState(false);
   const [phase, setPhase] = useState<GamePhase>('menu');
-  const [car, setCar] = useState<CarSpec>(CARS[0]);
-  const [time, setTime] = useState<TimeOfDay>('golden');
-  const [quality, setQuality] = useState<QualityTier>('high');
-  const [muted, setMuted] = useState(false);
-  const [tilt, setTilt] = useState(false);
+  const [settings, setSettings] = useState<StoredSettings>(() => loadSettings());
   const [portrait, setPortrait] = useState(false);
-  const [results, setResults] = useState<{ time: number | null; best: number | null; position: number; drift: number }>({
-    time: null,
-    best: null,
-    position: 1,
-    drift: 0,
-  });
+  const [results, setResults] = useState<{
+    time: number | null;
+    best: number | null;
+    position: number;
+    drift: number;
+    rivals: RivalResult[];
+  }>({ time: null, best: null, position: 1, drift: 0, rivals: [] });
+
+  const applySettingsToGame = useCallback((game: Game, s: StoredSettings) => {
+    const car = CARS.find((c) => c.id === s.carId) ?? CARS[0];
+    game.setCar(car);
+    game.setTimeOfDay(s.timeOfDay as TimeOfDay);
+    game.applyQuality(resolveTier(s.quality));
+    game.setMuted(s.muted);
+    game.setMusic(s.music);
+    game.hapticsEnabled = s.haptics;
+    game.input.autoThrottle = s.autoThrottle;
+    game.setEvent(s.eventId);
+    if (!s.tilt) game.disableTilt();
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -43,8 +118,8 @@ export const RacingGame: React.FC = () => {
     // Let the loading screen paint before the world generation blocks the thread.
     const handle = window.setTimeout(() => {
       if (disposed) return;
-      const tier = guessQuality();
-      game = new Game(canvas, tier);
+      const stored = loadSettings();
+      game = new Game(canvas, resolveTier(stored.quality));
       gameRef.current = game;
       game.onPhaseChange = (next) => {
         setPhase(next);
@@ -54,17 +129,27 @@ export const RacingGame: React.FC = () => {
             best: game.hud.bestTime,
             position: game.hud.position,
             drift: game.hud.driftScore,
+            rivals: game.rivalResults(),
           });
         }
       };
+      applySettingsToGame(game, stored);
+      if (stored.tilt) {
+        void game.enableTilt().then((ok) => {
+          if (!ok) {
+            const reverted = { ...settingsRef.current, tilt: false };
+            settingsRef.current = reverted;
+            saveSettings(reverted);
+            setSettings(reverted);
+          }
+        });
+      }
       game.setCameraMode('cinematic');
       game.start();
+      setReady(true);
       // Debug handle: lets the perf harness read renderer stats and drive the
       // car without going through the UI. Harmless to leave in a browser game.
       (window as unknown as { __horizonRush?: Game }).__horizonRush = game;
-      setQuality(tier);
-      setMuted(game.audio.muted);
-      setReady(true);
     }, 30);
 
     return () => {
@@ -72,9 +157,10 @@ export const RacingGame: React.FC = () => {
       window.clearTimeout(handle);
       game?.dispose();
       gameRef.current = null;
-      delete (window as unknown as { __horizonRush?: Game }).__horizonRush;
       setReady(false);
+      delete (window as unknown as { __horizonRush?: Game }).__horizonRush;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -101,74 +187,98 @@ export const RacingGame: React.FC = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Interruptions (calls, tab switches) pause the game rather than dropping
+  // the player back in at speed. The engine already freezes its loop when
+  // hidden; this makes the return deliberate too.
+  useEffect(() => {
+    const onVisibility = () => {
+      const game = gameRef.current;
+      if (!game || !document.hidden) return;
+      const p = game.currentPhase;
+      if (p === 'freeroam' || p === 'racing' || p === 'countdown') game.pause();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
+  // Rivals keep racing after the player finishes; refresh their times on the
+  // results screen until the last one is home.
+  useEffect(() => {
+    if (phase !== 'finished') return;
+    const id = window.setInterval(() => {
+      const game = gameRef.current;
+      if (!game) return;
+      const rivals = game.rivalResults();
+      setResults((r) => ({ ...r, rivals }));
+      if (rivals.every((rv) => rv.time !== null)) window.clearInterval(id);
+    }, 600);
+    return () => window.clearInterval(id);
+  }, [phase]);
+
+  const driving = phase === 'freeroam' || phase === 'racing' || phase === 'countdown';
+  useWakeLock(driving);
+
   const withGame = useCallback((fn: (game: Game) => void) => {
     const game = gameRef.current;
     if (game) fn(game);
   }, []);
 
-  const handleDrive = useCallback(() => {
-    withGame((game) => {
-      void game.audio.resume();
-      game.setCameraMode('chase');
-      game.beginFreeRoam();
-    });
-  }, [withGame]);
+  // Mirror of `settings` for handlers, so side effects can run outside the
+  // React state updater (StrictMode double-invokes updaters in dev).
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
-  const handleRace = useCallback(() => {
-    withGame((game) => {
-      void game.audio.resume();
-      game.setCameraMode('chase');
-      game.startRace();
-    });
-  }, [withGame]);
+  const handleSettings = useCallback((patch: Partial<StoredSettings>) => {
+    const next = { ...settingsRef.current, ...patch };
+    settingsRef.current = next;
+    saveSettings(next);
+    setSettings(next);
 
-  const handleCar = useCallback(
-    (next: CarSpec) => {
-      setCar(next);
-      withGame((game) => game.setCar(next));
-    },
-    [withGame],
-  );
-
-  const handleTime = useCallback(
-    (next: TimeOfDay) => {
-      setTime(next);
-      withGame((game) => game.setTimeOfDay(next));
-    },
-    [withGame],
-  );
-
-  const handleQuality = useCallback(
-    (next: QualityTier) => {
-      setQuality(next);
-      withGame((game) => game.applyQuality(next));
-    },
-    [withGame],
-  );
-
-  const handleMuted = useCallback(
-    (next: boolean) => {
-      setMuted(next);
-      withGame((game) => game.setMuted(next));
-    },
-    [withGame],
-  );
-
-  const handleTilt = useCallback(
-    (next: boolean) => {
-      const game = gameRef.current;
-      if (!game) return;
-      if (!next) {
+    const game = gameRef.current;
+    if (!game) return;
+    if (patch.carId !== undefined) {
+      game.setCar(CARS.find((c) => c.id === next.carId) ?? CARS[0]);
+    }
+    if (patch.timeOfDay !== undefined) game.setTimeOfDay(next.timeOfDay as TimeOfDay);
+    if (patch.quality !== undefined) game.applyQuality(resolveTier(next.quality));
+    if (patch.muted !== undefined) game.setMuted(next.muted);
+    if (patch.music !== undefined) game.setMusic(next.music);
+    if (patch.haptics !== undefined) game.hapticsEnabled = next.haptics;
+    if (patch.autoThrottle !== undefined) game.input.autoThrottle = next.autoThrottle;
+    if (patch.eventId !== undefined) game.setEvent(next.eventId);
+    if (patch.tilt !== undefined) {
+      if (next.tilt) {
+        void game.enableTilt().then((ok) => {
+          if (!ok) {
+            const reverted = { ...settingsRef.current, tilt: false };
+            settingsRef.current = reverted;
+            saveSettings(reverted);
+            setSettings(reverted);
+          }
+        });
+      } else {
         game.disableTilt();
-        setTilt(false);
-        return;
       }
-      void game.enableTilt().then((ok) => setTilt(ok));
+    }
+  }, []);
+
+  const beginDriving = useCallback(
+    (race: boolean) => {
+      enterImmersiveMode();
+      withGame((game) => {
+        void game.audio.resume();
+        game.setCameraMode('chase');
+        if (race) game.startRace();
+        else game.beginFreeRoam();
+      });
     },
-    [],
+    [withGame],
   );
 
-  const driving = phase === 'freeroam' || phase === 'racing' || phase === 'countdown';
+  const handleDrive = useCallback(() => beginDriving(false), [beginDriving]);
+  const handleRace = useCallback(() => beginDriving(true), [beginDriving]);
 
   return (
     <div
@@ -184,6 +294,7 @@ export const RacingGame: React.FC = () => {
       {ready && gameRef.current && (
         <TouchControls
           input={gameRef.current.input}
+          autoThrottle={settings.autoThrottle}
           visible={driving}
           onPause={() => withGame((game) => game.pause())}
           onCamera={() => withGame((game) => game.cycleCamera())}
@@ -203,17 +314,9 @@ export const RacingGame: React.FC = () => {
 
       {ready && phase === 'menu' && (
         <StartScreen
-          car={car}
-          onCar={handleCar}
-          time={time}
-          onTime={handleTime}
-          quality={quality}
-          onQuality={handleQuality}
-          muted={muted}
-          onMuted={handleMuted}
-          tilt={tilt}
-          onTilt={handleTilt}
-          bestTime={gameRef.current?.hud.bestTime ?? null}
+          settings={settings}
+          onSettings={handleSettings}
+          bestFor={(id) => gameRef.current?.bestTimeFor(id) ?? null}
           onDrive={handleDrive}
           onRace={handleRace}
         />
@@ -221,9 +324,9 @@ export const RacingGame: React.FC = () => {
 
       {ready && phase === 'paused' && (
         <PauseOverlay
-          muted={muted}
-          onMuted={handleMuted}
-          racing={gameRef.current?.hud.checkpointTotal !== undefined}
+          muted={settings.muted}
+          onMuted={(m) => handleSettings({ muted: m })}
+          racing={gameRef.current?.pausedFromRace ?? false}
           onResume={() => withGame((game) => game.resume())}
           onRestart={() => withGame((game) => game.startRace())}
           onMenu={() => withGame((game) => game.returnToMenu())}
@@ -237,7 +340,9 @@ export const RacingGame: React.FC = () => {
           position={results.position}
           racers={gameRef.current?.hud.racerCount ?? 1}
           driftScore={results.drift}
-          onRestart={() => withGame((game) => game.startRace())}
+          rivals={results.rivals}
+          eventName={eventById(settings.eventId).name}
+          onRestart={handleRace}
           onFreeRoam={() => withGame((game) => game.beginFreeRoam())}
           onMenu={() => withGame((game) => game.returnToMenu())}
         />

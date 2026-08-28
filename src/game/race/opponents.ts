@@ -7,6 +7,9 @@ import type { Terrain } from '../world/terrain';
 
 /** Lateral cornering the AI is willing to ask of its tyres, m/s^2. */
 const AI_LATERAL_LIMIT = 9.8;
+/** Grid slots are staggered behind the player's slot, which itself sits this
+ * far before the start line (mirrors Race's START_SETBACK). */
+const START_LINE_SETBACK = 26;
 
 interface OpponentConfig {
   spec: CarSpec;
@@ -26,10 +29,16 @@ interface OpponentConfig {
  */
 class Opponent {
   readonly model: CarModel;
-  /** Metres travelled along the loop since the start. */
+  /** Metres travelled since the grid slot (which sits behind the line). */
   travelled = 0;
+  /** How far behind the start line this car's grid slot was. */
+  startOffset = 0;
+  /** Set once this rival crosses the event's finish distance. */
+  finishTime: number | null = null;
+  readonly name: string;
 
   private distance = 0;
+  private direction: 1 | -1 = 1;
   private speed = 0;
   private lateral: number;
   private targetLateral: number;
@@ -41,19 +50,34 @@ class Opponent {
 
   constructor(config: OpponentConfig, quality: QualitySettings) {
     this.model = new CarModel(config.spec, quality.shadows);
+    this.name = config.spec.name;
     this.lateral = config.lane;
     this.targetLateral = config.lane;
     this.pace = config.pace;
   }
 
-  reset(road: Road, startDistance: number, lane: number): void {
+  reset(
+    road: Road,
+    startDistance: number,
+    lane: number,
+    direction: 1 | -1,
+    startOffset: number,
+  ): void {
     this.distance = startDistance;
+    this.startOffset = startOffset;
+    this.direction = direction;
     this.travelled = 0;
+    this.finishTime = null;
     this.speed = 0;
     this.lateral = lane;
     this.targetLateral = lane;
     const idx = road.indexAtDistance(this.distance);
-    this.yaw = road.headingAt(idx);
+    this.yaw = this.headingFor(road, idx);
+  }
+
+  private headingFor(road: Road, index: number): number {
+    const heading = road.headingAt(index);
+    return this.direction === 1 ? heading : heading + Math.PI;
   }
 
   update(
@@ -63,16 +87,18 @@ class Opponent {
     playerProgress: number,
     running: boolean,
   ): void {
+    const dir = this.direction;
     if (running) {
       const idx = road.indexAtDistance(this.distance);
 
       // Look far enough ahead that the corner is anticipated rather than
-      // reacted to, and scale that lookahead with speed.
+      // reacted to, and scale that lookahead with speed. All lookaheads run in
+      // the direction of travel.
       const lookaheadMetres = clamp(18 + this.speed * 1.4, 24, 120);
-      const aheadIdx = road.indexAtDistance(this.distance + lookaheadMetres);
+      const aheadIdx = road.indexAtDistance(this.distance + dir * lookaheadMetres);
       const curvature = Math.max(
-        road.curvatureAt(aheadIdx, 8),
-        road.curvatureAt(idx, 8) * 0.6,
+        road.curvatureAt(aheadIdx, dir * 8),
+        road.curvatureAt(idx, dir * 8) * 0.6,
       );
 
       let targetSpeed = 63 * this.pace;
@@ -81,7 +107,7 @@ class Opponent {
       }
 
       // Gentle rubber-banding keeps the pack in sight without feeling rigged.
-      const gap = playerProgress - this.travelled;
+      const gap = playerProgress - this.progress;
       targetSpeed *= clamp(1 + gap * 0.0022, 0.84, 1.18);
       targetSpeed = clamp(targetSpeed, 10, 72);
 
@@ -90,11 +116,12 @@ class Opponent {
       this.speed = damp(this.speed, targetSpeed, rate, dt);
 
       const step = this.speed * dt;
-      this.distance += step;
+      this.distance += dir * step;
       this.travelled += step;
 
       // Drift toward a racing line: outside on entry, tight through the apex.
-      const apex = -Math.sign(this.signedCurvature(road, aheadIdx)) * Math.min(2.6, curvature * 900);
+      const apex =
+        -Math.sign(this.signedCurvature(road, aheadIdx)) * Math.min(2.6, curvature * 900);
       this.targetLateral = clamp(this.lateral * 0.6 + apex, -3.4, 3.4);
       this.lateral = damp(this.lateral, this.targetLateral, 1.4, dt);
     }
@@ -104,7 +131,7 @@ class Opponent {
     const ground = terrain.heightAt(this.pos.x, this.pos.z);
     this.pos.y = Math.max(ground, this.pos.y);
 
-    const targetYaw = road.headingAt(idx);
+    const targetYaw = this.headingFor(road, idx);
     const delta = wrapAngle(targetYaw - this.yaw);
     this.yaw = wrapAngle(this.yaw + delta * (1 - Math.exp(-9 * dt)));
 
@@ -112,7 +139,7 @@ class Opponent {
     this.model.group.rotation.y = this.yaw;
 
     // Lean into the corner so they look like they are working for it.
-    this.visualRoll = damp(this.visualRoll, clamp(-delta / dt * 0.06, -0.1, 0.1), 5, dt);
+    this.visualRoll = damp(this.visualRoll, clamp((-delta / dt) * 0.06, -0.1, 0.1), 5, dt);
     this.wheelSpin += (this.speed / 0.34) * dt;
     this.model.updateVisuals(
       clamp(delta * 6, -0.4, 0.4),
@@ -125,10 +152,16 @@ class Opponent {
     );
   }
 
+  /** Heading change over the next stretch, signed, in the travel direction. */
   private signedCurvature(road: Road, index: number): number {
     const a = road.headingAt(index);
-    const b = road.headingAt(index + 10);
-    return wrapAngle(b - a);
+    const b = road.headingAt(index + this.direction * 10);
+    return wrapAngle(b - a) * this.direction;
+  }
+
+  /** Metres of the event completed, measured from the start line. */
+  get progress(): number {
+    return this.travelled - this.startOffset;
   }
 
   get position(): THREE.Vector3 {
@@ -138,6 +171,11 @@ class Opponent {
   dispose(): void {
     this.model.dispose();
   }
+}
+
+export interface RivalResult {
+  name: string;
+  time: number | null;
 }
 
 export class OpponentField {
@@ -151,7 +189,11 @@ export class OpponentField {
     for (let i = 0; i < count; i++) {
       const spec = CARS[(i + 1) % CARS.length];
       const opponent = new Opponent(
-        { spec: { ...spec, color: shiftHue(spec.color, i) }, lane: lanes[i % lanes.length], pace: paces[i % paces.length] },
+        {
+          spec: { ...spec, color: shiftHue(spec.color, i) },
+          lane: lanes[i % lanes.length],
+          pace: paces[i % paces.length],
+        },
         quality,
       );
       this.opponents.push(opponent);
@@ -164,11 +206,18 @@ export class OpponentField {
     return this.opponents.length + 1;
   }
 
-  reset(road: Road, startDistance: number): void {
+  reset(road: Road, startDistance: number, direction: 1 | -1): void {
     const lanes = [-3.0, 3.0, -1.2, 1.2];
     for (let i = 0; i < this.opponents.length; i++) {
       // Stagger the grid back from the line so nobody starts inside anyone else.
-      this.opponents[i].reset(road, startDistance - 7 - i * 6.5, lanes[i % lanes.length]);
+      const behind = 7 + i * 6.5;
+      this.opponents[i].reset(
+        road,
+        startDistance - direction * behind,
+        lanes[i % lanes.length],
+        direction,
+        behind + START_LINE_SETBACK,
+      );
     }
     this.group.visible = true;
   }
@@ -188,12 +237,42 @@ export class OpponentField {
     for (const o of this.opponents) o.update(dt, road, terrain, playerProgress, running);
   }
 
+  /** Stamp finish times for rivals whose line-relative progress crosses. */
+  recordFinishes(clock: number, raceDistance: number): void {
+    for (const o of this.opponents) {
+      if (o.finishTime === null && o.progress >= raceDistance) {
+        o.finishTime = clock;
+      }
+    }
+  }
+
+  get allFinished(): boolean {
+    return this.opponents.every((o) => o.finishTime !== null);
+  }
+
+  results(): RivalResult[] {
+    return this.opponents
+      .map((o) => ({ name: o.name, time: o.finishTime }))
+      .sort((a, b) => (a.time ?? Infinity) - (b.time ?? Infinity));
+  }
+
   /** 1 = leading. */
   playerPosition(playerProgress: number): number {
     if (!this.group.visible) return 1;
     let ahead = 0;
-    for (const o of this.opponents) if (o.travelled > playerProgress) ahead++;
+    for (const o of this.opponents) if (o.progress > playerProgress) ahead++;
     return ahead + 1;
+  }
+
+  /** Writes [x, z] pairs into `out`; returns how many rivals were written. */
+  writePositions(out: Float32Array): number {
+    if (!this.group.visible) return 0;
+    const n = Math.min(this.opponents.length, out.length >> 1);
+    for (let i = 0; i < n; i++) {
+      out[i * 2] = this.opponents[i].position.x;
+      out[i * 2 + 1] = this.opponents[i].position.z;
+    }
+    return n;
   }
 
   /** Pushes the player out of an opponent they have driven into. */

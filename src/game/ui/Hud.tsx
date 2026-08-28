@@ -55,6 +55,9 @@ export const Hud: React.FC<Props> = ({ game, phase }) => {
   const countdownRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLDivElement>(null);
   const offroadRef = useRef<HTMLDivElement>(null);
+  const wrongWayRef = useRef<HTMLDivElement>(null);
+  const nitroFillRef = useRef<HTMLDivElement>(null);
+  const nitroBoxRef = useRef<HTMLDivElement>(null);
   const minimapRef = useRef<HTMLCanvasElement>(null);
 
   // Static route layer for the minimap, drawn once.
@@ -102,7 +105,7 @@ export const Hud: React.FC<Props> = ({ game, phase }) => {
       ctx = canvas.getContext('2d');
       ctx?.scale(dpr, dpr);
     }
-    const gates = game.getGatePositions();
+    const gates = game.gatePositions;
     const extent = game.mapHalfExtent;
     const toPx = (v: number) => ((v + extent) / (extent * 2)) * (size - 12) + 6;
 
@@ -169,20 +172,42 @@ export const Hud: React.FC<Props> = ({ game, phase }) => {
       if (offroadRef.current) {
         offroadRef.current.style.opacity = h.offRoad && h.speedKmh > 30 ? '1' : '0';
       }
+      if (wrongWayRef.current) {
+        wrongWayRef.current.style.opacity = h.wrongWay ? '1' : '0';
+      }
+      if (nitroFillRef.current && nitroBoxRef.current) {
+        nitroFillRef.current.style.height = `${Math.round(h.nitro01 * 100)}%`;
+        nitroFillRef.current.style.background = h.boosting
+          ? 'linear-gradient(to top, #7dd3fc, #e0f2fe)'
+          : 'linear-gradient(to top, #0ea5e9, #7dd3fc)';
+        nitroBoxRef.current.style.opacity =
+          h.phase === 'racing' || h.phase === 'freeroam' || h.phase === 'countdown' ? '1' : '0';
+        nitroBoxRef.current.style.boxShadow =
+          h.nitro01 > 0.98 || h.boosting ? '0 0 12px rgba(125,211,252,0.8)' : 'none';
+      }
 
       if (ctx && routeLayer.current) {
         ctx.clearRect(0, 0, size, size);
         ctx.drawImage(routeLayer.current, 0, 0, size, size);
 
-        // Gates: the next one pops, the rest are faint markers.
+        // Gates: the next one pops, the rest are faint markers. The array is
+        // live and only the active event's slots are meaningful.
         const next = h.checkpoint;
-        for (let i = 0; i < gates.length / 2; i++) {
+        for (let i = 0; i < h.checkpointTotal; i++) {
           const x = toPx(gates[i * 2]);
           const y = toPx(gates[i * 2 + 1]);
           const isNext = i === next && (h.phase === 'racing' || h.phase === 'countdown');
           ctx.beginPath();
           ctx.arc(x, y, isNext ? 4 : 2, 0, Math.PI * 2);
           ctx.fillStyle = isNext ? '#53e0ff' : 'rgba(255,255,255,0.4)';
+          ctx.fill();
+        }
+
+        // Rival cars while racing.
+        for (let i = 0; i < h.rivalCount; i++) {
+          ctx.beginPath();
+          ctx.arc(toPx(h.rivals[i * 2]), toPx(h.rivals[i * 2 + 1]), 2.4, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255,110,90,0.9)';
           ctx.fill();
         }
 
@@ -247,6 +272,18 @@ export const Hud: React.FC<Props> = ({ game, phase }) => {
         </div>
       </div>
 
+      {/* Nitro meter */}
+      <div
+        ref={nitroBoxRef}
+        className="absolute top-[46%] right-3 h-24 w-2.5 overflow-hidden rounded-full border border-sky-200/30 bg-black/40 opacity-0 transition-opacity duration-300"
+      >
+        <div
+          ref={nitroFillRef}
+          className="absolute right-0 bottom-0 left-0"
+          style={{ height: '0%' }}
+        />
+      </div>
+
       {/* Drift chain */}
       <div
         ref={driftRef}
@@ -283,6 +320,12 @@ export const Hud: React.FC<Props> = ({ game, phase }) => {
           className="rounded-full bg-amber-500/25 px-3 py-1 text-[10px] font-semibold tracking-wide text-amber-100 opacity-0 transition-opacity duration-200"
         >
           OFF ROAD
+        </div>
+        <div
+          ref={wrongWayRef}
+          className="rounded-full bg-rose-600/40 px-3 py-1 text-[10px] font-black tracking-[0.2em] text-rose-50 opacity-0 transition-opacity duration-200"
+        >
+          WRONG WAY
         </div>
       </div>
 

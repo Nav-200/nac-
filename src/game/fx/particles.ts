@@ -47,6 +47,7 @@ export class SmokeSystem {
   private velocities: Float32Array;
   private life: Float32Array;
   private maxLife: Float32Array;
+  private baseAlpha: Float32Array;
   private head = 0;
   private geometry: THREE.BufferGeometry;
   private material: THREE.ShaderMaterial;
@@ -60,6 +61,7 @@ export class SmokeSystem {
     this.alphas = new Float32Array(capacity);
     this.life = new Float32Array(capacity);
     this.maxLife = new Float32Array(capacity);
+    this.baseAlpha = new Float32Array(capacity);
 
     this.geometry = new THREE.BufferGeometry();
     this.geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
@@ -110,7 +112,8 @@ export class SmokeSystem {
     this.colors[o + 1] = g;
     this.colors[o + 2] = b;
     this.sizes[i] = size;
-    this.alphas[i] = alpha;
+    this.alphas[i] = 0;
+    this.baseAlpha[i] = alpha;
     this.life[i] = life;
     this.maxLife[i] = life;
   }
@@ -132,8 +135,9 @@ export class SmokeSystem {
       const t = clamp01(this.life[i] / this.maxLife[i]);
       this.sizes[i] += 1.7 * dt;
       // Fade in over the first sliver of life as well as out, so puffs do not
-      // pop into existence at full strength right under the camera.
-      this.alphas[i] = t * t * Math.min(1, (1 - t) * 7) * 0.34;
+      // pop into existence at full strength right under the camera. The spawn
+      // alpha is the peak: smoke stays hazy, nitro flames run much hotter.
+      this.alphas[i] = t * t * Math.min(1, (1 - t) * 7) * this.baseAlpha[i];
       if (this.life[i] <= 0) this.alphas[i] = 0;
     }
     this.geometry.getAttribute('position').needsUpdate = true;

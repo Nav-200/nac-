@@ -49,6 +49,8 @@ export class Vehicle {
   grounded = true;
   airTime = 0;
   offRoad = false;
+  /** Set by the game while nitro is burning; read by camera, FX and audio. */
+  boosting = false;
 
   gear = 1;
   rpm = IDLE_RPM;
@@ -162,7 +164,8 @@ export class Vehicle {
       brake = 0;
     }
 
-    const topSpeed = spec.topSpeed * (this.offRoad ? 0.6 : 1);
+    const boost = this.boosting ? 1.2 : 1;
+    const topSpeed = spec.topSpeed * (this.offRoad ? 0.6 : 1) * boost;
     const speedFrac = clamp01(Math.abs(u) / topSpeed);
     // Force tapers off as the car approaches its top speed, which gives the
     // long, flattening pull that fast cars have.
@@ -172,7 +175,7 @@ export class Vehicle {
       if (reversing) {
         force = -throttle * spec.power * 0.42;
       } else {
-        force = throttle * spec.power * powerFactor;
+        force = throttle * spec.power * powerFactor * (this.boosting ? 1.45 : 1);
       }
       force -= brake * 26000 * Math.sign(u || 1) * Math.min(1, Math.abs(u) / 1.5);
     }
@@ -239,7 +242,7 @@ export class Vehicle {
 
     // A hard ceiling, well above anything the model should reach, so a bad
     // interaction can never turn into a car that has left the planet.
-    const ceiling = spec.topSpeed * 1.35;
+    const ceiling = spec.topSpeed * 1.35 * boost;
     const totalSpeed = Math.hypot(this.forwardSpeed, this.lateralSpeed);
     if (totalSpeed > ceiling) {
       const k = ceiling / totalSpeed;
@@ -375,6 +378,36 @@ export class Vehicle {
       this.position.z - cos * d,
     );
     return clamp((ahead - behind) / (d * 2), -0.6, 0.6);
+  }
+
+  /**
+   * Hard contact with a fixed obstacle whose surface normal (pointing at the
+   * car) is (nx, nz). Removes the velocity component driving into it, scrubs a
+   * little more for the crunch, and reports the impact speed for FX/audio.
+   */
+  collideNormal(nx: number, nz: number): number {
+    const sin = Math.sin(this.yaw);
+    const cos = Math.cos(this.yaw);
+    let vx = this.forwardSpeed * sin + this.lateralSpeed * cos;
+    let vz = this.forwardSpeed * cos - this.lateralSpeed * sin;
+    const into = vx * nx + vz * nz;
+    if (into >= 0) return 0;
+    vx -= nx * into;
+    vz -= nz * into;
+    vx *= 0.93;
+    vz *= 0.93;
+    this.forwardSpeed = vx * sin + vz * cos;
+    this.lateralSpeed = vx * cos - vz * sin;
+    // Glancing a tree also knocks the nose around a touch.
+    this.yawRate += (nx * cos - nz * sin) * Math.min(-into, 8) * 0.05;
+    return -into;
+  }
+
+  /** Extra rolling drag from ploughing through something soft. */
+  applySoftDrag(dt: number, strength: number): void {
+    const decay = Math.exp(-strength * dt);
+    this.forwardSpeed *= decay;
+    this.lateralSpeed *= decay;
   }
 
   /** Nudge used to separate cars that overlap. */

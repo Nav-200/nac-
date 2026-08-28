@@ -73,6 +73,13 @@ export interface HudState {
   countdown: number;
   position: number;
   racerCount: number;
+  eventId: string;
+  wrongWay: boolean;
+  /** Flat [x, z] pairs of rival cars, valid up to rivalCount. */
+  rivals: Float32Array;
+  rivalCount: number;
+  nitro01: number;
+  boosting: boolean;
   // Free roam
   driftScore: number;
   driftChain: number;
@@ -102,6 +109,12 @@ export const createHudState = (): HudState => ({
   countdown: 0,
   position: 1,
   racerCount: 1,
+  eventId: 'circuit',
+  wrongWay: false,
+  rivals: new Float32Array(8),
+  rivalCount: 0,
+  nitro01: 0,
+  boosting: false,
   driftScore: 0,
   driftChain: 0,
   driftActive: false,
@@ -112,9 +125,12 @@ export const createHudState = (): HudState => ({
   quality: 'high',
 });
 
+export type BodyStyle = 'coupe' | 'muscle' | 'buggy';
+
 export interface CarSpec {
   id: string;
   name: string;
+  body: BodyStyle;
   color: number;
   accentColor: number;
   /** Peak engine force, newtons-ish. Tuned by feel, not realism. */
@@ -130,6 +146,7 @@ export const CARS: CarSpec[] = [
   {
     id: 'horizon',
     name: 'Meridian GT',
+    body: 'coupe',
     color: 0xff5a3c,
     accentColor: 0x1c1f26,
     power: 15200,
@@ -141,6 +158,7 @@ export const CARS: CarSpec[] = [
   {
     id: 'drifter',
     name: 'Kessel Drift',
+    body: 'coupe',
     color: 0x36c7f0,
     accentColor: 0x14212b,
     power: 14200,
@@ -152,6 +170,7 @@ export const CARS: CarSpec[] = [
   {
     id: 'rally',
     name: 'Terra Rally',
+    body: 'buggy',
     color: 0xf5d020,
     accentColor: 0x2b2415,
     power: 13600,
@@ -160,4 +179,47 @@ export const CARS: CarSpec[] = [
     looseness: 0.78,
     topSpeed: 72,
   },
+  {
+    id: 'vulcan',
+    name: 'Vulcan V8',
+    body: 'muscle',
+    color: 0x7b3fd4,
+    accentColor: 0x191423,
+    power: 16400,
+    mass: 1520,
+    grip: 0.94,
+    looseness: 1.2,
+    topSpeed: 88,
+  },
+  {
+    id: 'dune',
+    name: 'Dune Hopper',
+    body: 'buggy',
+    color: 0xff9530,
+    accentColor: 0x2b1d10,
+    power: 12800,
+    mass: 1240,
+    grip: 1.26,
+    looseness: 0.9,
+    topSpeed: 68,
+  },
+  {
+    id: 'spectre',
+    name: 'Spectre S',
+    body: 'muscle',
+    color: 0xe8ecef,
+    accentColor: 0x0f3d2e,
+    power: 15600,
+    mass: 1360,
+    grip: 1.06,
+    looseness: 1.05,
+    topSpeed: 82,
+  },
 ];
+
+/** 0..1 stat bars for the garage, normalized across the roster. */
+export const carStats = (spec: CarSpec): { speed: number; grip: number; drift: number } => ({
+  speed: (spec.topSpeed - 62) / 30,
+  grip: (spec.grip - 0.8) / 0.55,
+  drift: (spec.looseness - 0.6) / 0.95,
+});

@@ -25,6 +25,8 @@ export class ChaseCamera {
   private readonly lookAt = new THREE.Vector3();
   private cinematicAngle = 0;
   private shake = 0;
+  private impulseShake = 0;
+  private boostZoom = 0;
   private initialised = false;
 
   reset(vehicle: Vehicle): void {
@@ -109,7 +111,8 @@ export class ChaseCamera {
     camera.position.y += (Math.random() - 0.5) * this.shake;
     camera.lookAt(this.lookAt);
 
-    const fov = lerp(BASE_FOV, MAX_FOV, speed01 * speed01);
+    this.boostZoom = damp(this.boostZoom, vehicle.boosting ? 1 : 0, 5, dt);
+    const fov = lerp(BASE_FOV, MAX_FOV, speed01 * speed01) + this.boostZoom * 9;
     if (Math.abs(camera.fov - fov) > 0.05) {
       camera.fov = damp(camera.fov, fov, 4, dt);
       camera.updateProjectionMatrix();
@@ -145,7 +148,8 @@ export class ChaseCamera {
     camera.lookAt(this.lookAt);
     camera.rotateZ(-vehicle.roll * 0.5);
 
-    const fov = lerp(BASE_FOV + 4, MAX_FOV + 4, speed01 * speed01);
+    this.boostZoom = damp(this.boostZoom, vehicle.boosting ? 1 : 0, 5, dt);
+    const fov = lerp(BASE_FOV + 4, MAX_FOV + 4, speed01 * speed01) + this.boostZoom * 9;
     camera.fov = damp(camera.fov, fov, 4, dt);
     camera.updateProjectionMatrix();
   }
@@ -171,11 +175,18 @@ export class ChaseCamera {
     camera.updateProjectionMatrix();
   }
 
+  /** One-off jolt (collisions, hard landings); decays on its own. */
+  addImpulse(amount: number): void {
+    this.impulseShake = Math.min(this.impulseShake + amount, 0.6);
+  }
+
   private applyShake(dt: number, vehicle: Vehicle, speed01: number): void {
     let wanted = speed01 * speed01 * 0.055;
     if (vehicle.offRoad) wanted += speed01 * 0.11;
+    if (vehicle.boosting) wanted += 0.06;
     if (!vehicle.grounded) wanted = 0;
-    this.shake = damp(this.shake, wanted, 8, dt);
+    this.impulseShake *= Math.exp(-7 * dt);
+    this.shake = damp(this.shake, wanted, 8, dt) + this.impulseShake;
   }
 
   /** Camera yaw, exposed for the audio panner and the minimap. */

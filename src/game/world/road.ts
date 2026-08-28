@@ -274,14 +274,17 @@ export class Road {
     return Math.atan2(this.tx[i], this.tz[i]);
   }
 
-  /** Curvature magnitude at a sample; used by the AI to pick a corner speed. */
+  /**
+   * Curvature magnitude at a sample; used by the AI to pick a corner speed.
+   * `lookahead` may be negative for travel against the sample order.
+   */
   curvatureAt(index: number, lookahead = 6): number {
     const n = this.count;
     const i = ((index % n) + n) % n;
-    const j = (i + lookahead) % n;
+    const j = (((i + lookahead) % n) + n) % n;
     const dot = this.tx[i] * this.tx[j] + this.tz[i] * this.tz[j];
     const clamped = dot < -1 ? -1 : dot > 1 ? 1 : dot;
-    return Math.acos(clamped) / (lookahead * SAMPLE_SPACING);
+    return Math.acos(clamped) / (Math.abs(lookahead) * SAMPLE_SPACING);
   }
 
   /** Asphalt ribbon, painted edge lines, gravel shoulders and centre dashes. */

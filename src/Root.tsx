@@ -3,9 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState } from 'react';
-import App from './App';
-import RacingGame from './game/ui/RacingGame';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
+
+// Both routes are heavyweight (the game pulls three.js, the simulator is a
+// 2,400-line app of its own), so each loads only when its hash is active.
+const App = lazy(() => import('./App'));
+const RacingGame = lazy(() => import('./game/ui/RacingGame'));
 
 const SIMULATOR_HASH = '#simulator';
 
@@ -28,7 +31,7 @@ export const Root: React.FC = () => {
 
   if (route === 'simulator') {
     return (
-      <>
+      <Suspense fallback={<RouteLoading />}>
         <App />
         <a
           href="#"
@@ -36,11 +39,23 @@ export const Root: React.FC = () => {
         >
           ← Horizon Rush
         </a>
-      </>
+      </Suspense>
     );
   }
 
-  return <RacingGame />;
+  return (
+    <Suspense fallback={<RouteLoading />}>
+      <RacingGame />
+    </Suspense>
+  );
 };
+
+const RouteLoading: React.FC = () => (
+  <div className="fixed inset-0 flex items-center justify-center bg-[#070b12]">
+    <div className="h-1 w-40 overflow-hidden rounded-full bg-white/10">
+      <div className="h-full w-1/3 animate-pulse rounded-full bg-cyan-400" />
+    </div>
+  </div>
+);
 
 export default Root;

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { clamp01, lerp } from '../engine/math';
-import type { CarSpec } from '../types';
+import type { BodyStyle, CarSpec } from '../types';
 import { mergeParts } from '../world/geometryUtils';
 
 const GLASS = 0x18202b;
@@ -60,7 +60,7 @@ const makeBeamTexture = (): THREE.Texture => {
 
 let beamTexture: THREE.Texture | null = null;
 
-const buildBody = (paint: number, accent: number): THREE.BufferGeometry =>
+const buildCoupe = (paint: number, accent: number): THREE.BufferGeometry =>
   mergeParts([
     // Main hull and the wedge that gives it a nose.
     { geometry: new THREE.BoxGeometry(1.84, 0.5, 3.5), color: paint, position: [0, 0.62, -0.1] },
@@ -81,6 +81,45 @@ const buildBody = (paint: number, accent: number): THREE.BufferGeometry =>
     { geometry: new THREE.BoxGeometry(0.26, 0.09, 0.12), color: accent, position: [0.92, 0.98, 0.5] },
     { geometry: new THREE.BoxGeometry(0.26, 0.09, 0.12), color: accent, position: [-0.92, 0.98, 0.5] },
   ]);
+
+const buildMuscle = (paint: number, accent: number): THREE.BufferGeometry =>
+  mergeParts([
+    // Long bonnet, blunt tail, everything a little wider and lower.
+    { geometry: new THREE.BoxGeometry(1.96, 0.54, 3.9), color: paint, position: [0, 0.6, 0] },
+    { geometry: new THREE.BoxGeometry(1.7, 0.3, 1.5), color: paint, position: [0, 0.86, 1.15] },
+    { geometry: new THREE.BoxGeometry(0.5, 0.1, 1.2), color: accent, position: [0, 0.9, 1.2] },
+    { geometry: new THREE.BoxGeometry(2.02, 0.24, 4.1), color: accent, position: [0, 0.36, 0] },
+    // Cabin set far back.
+    { geometry: new THREE.BoxGeometry(1.56, 0.44, 1.5), color: GLASS, position: [0, 1.06, -0.75] },
+    { geometry: new THREE.BoxGeometry(1.4, 0.12, 1.1), color: paint, position: [0, 1.3, -0.85] },
+    // Bonnet scoop and ducktail.
+    { geometry: new THREE.BoxGeometry(0.7, 0.16, 0.7), color: accent, position: [0, 0.94, 0.7] },
+    { geometry: new THREE.BoxGeometry(1.8, 0.14, 0.4), color: accent, position: [0, 0.98, -1.98] },
+    { geometry: new THREE.BoxGeometry(0.26, 0.09, 0.12), color: accent, position: [0.98, 0.98, 0.2] },
+    { geometry: new THREE.BoxGeometry(0.26, 0.09, 0.12), color: accent, position: [-0.98, 0.98, 0.2] },
+  ]);
+
+const buildBuggy = (paint: number, accent: number): THREE.BufferGeometry =>
+  mergeParts([
+    // Tall, short and boxy, riding high.
+    { geometry: new THREE.BoxGeometry(1.8, 0.6, 3.3), color: paint, position: [0, 0.86, 0] },
+    { geometry: new THREE.BoxGeometry(1.9, 0.26, 3.5), color: accent, position: [0, 0.56, 0] },
+    { geometry: new THREE.BoxGeometry(1.5, 0.5, 1.5), color: GLASS, position: [0, 1.34, -0.15] },
+    { geometry: new THREE.BoxGeometry(1.36, 0.14, 1.2), color: paint, position: [0, 1.62, -0.25] },
+    // Roll bar and roof lights.
+    { geometry: new THREE.BoxGeometry(0.12, 0.5, 0.12), color: accent, position: [0.7, 1.5, -1.0] },
+    { geometry: new THREE.BoxGeometry(0.12, 0.5, 0.12), color: accent, position: [-0.7, 1.5, -1.0] },
+    { geometry: new THREE.BoxGeometry(1.52, 0.12, 0.12), color: accent, position: [0, 1.78, -1.0] },
+    { geometry: new THREE.BoxGeometry(1.1, 0.14, 0.2), color: 0xfff0c8, position: [0, 1.74, 0.55] },
+    // Bull bar.
+    { geometry: new THREE.BoxGeometry(1.6, 0.2, 0.14), color: accent, position: [0, 0.7, 1.78] },
+  ]);
+
+const BODY_BUILDERS: Record<BodyStyle, (paint: number, accent: number) => THREE.BufferGeometry> = {
+  coupe: buildCoupe,
+  muscle: buildMuscle,
+  buggy: buildBuggy,
+};
 
 const buildWheel = (): THREE.BufferGeometry => {
   const geo = mergeParts([
@@ -113,7 +152,7 @@ export class CarModel {
   constructor(spec: CarSpec, castShadow = true) {
     this.group.name = `car-${spec.id}`;
 
-    const bodyGeo = buildBody(spec.color, spec.accentColor);
+    const bodyGeo = BODY_BUILDERS[spec.body](spec.color, spec.accentColor);
     this.owned.push(bodyGeo);
     this.bodyMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
     this.bodyMesh = new THREE.Mesh(bodyGeo, this.bodyMaterial);
