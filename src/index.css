@@ -1,1 +1,13 @@
 @import "tailwindcss";
+
+/* Stop the page itself from rubber-banding while a thumb is on a control. */
+html,
+body {
+  overscroll-behavior: none;
+}
+
+/* The game canvas fills its parent; the parent is fixed, so nothing scrolls. */
+canvas {
+  display: block;
+  touch-action: none;
+}
