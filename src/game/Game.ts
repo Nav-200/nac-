@@ -125,6 +125,9 @@ export class Game {
   private muzzleAnchor = new THREE.Vector3();
   private lastVehicleAudio = 0;
   private wantedForSound = 0;
+  /** Rolling averages of CPU time per frame (ms) for the debug API. */
+  private simMsAvg = 0;
+  private renderMsAvg = 0;
 
   constructor(canvas: HTMLCanvasElement, private opts: GameOptions = {}) {
     this.canvas = canvas;
@@ -346,10 +349,11 @@ export class Game {
   };
 
   /** Advance simulation + render once with a real-time delta. */
-  tick(dtReal: number): void {
+  tick(dtReal: number, doRender = true): void {
     const input = this.input.poll();
     this.handleGlobalKeys(input);
     const playing = store.hud.phase === 'playing';
+    const t0 = performance.now();
     if (playing) {
       this.playTime += dtReal;
       this.accumulator += dtReal;
@@ -361,8 +365,12 @@ export class Game {
       }
       if (steps === MAX_SUBSTEPS) this.accumulator = 0;
     }
+    const t1 = performance.now();
     this.frame++;
-    this.render(dtReal);
+    if (doRender) this.render(dtReal);
+    const t2 = performance.now();
+    this.simMsAvg += (t1 - t0 - this.simMsAvg) * 0.05;
+    this.renderMsAvg += (t2 - t1 - this.renderMsAvg) * 0.05;
     // HUD refresh at ~12 Hz
     this.hudTimer += dtReal;
     this.fpsAcc += dtReal;
@@ -1189,8 +1197,9 @@ export class Game {
   }
 
   // ------------------------------------------------------------------ debug API
+  /** Debug: advance n fixed frames; only the last one renders (fast under software GL). */
   stepFrames(n: number): void {
-    for (let i = 0; i < n; i++) this.tick(FIXED_DT);
+    for (let i = 0; i < n; i++) this.tick(FIXED_DT, i === n - 1);
   }
 
   measureFrameMs(n: number): number {
@@ -1223,7 +1232,7 @@ export class Game {
 
   getRenderStats(): unknown {
     const info = this.scene.renderer.info;
-    return { calls: info.render.calls, triangles: info.render.triangles, geometries: info.memory.geometries, textures: info.memory.textures, programs: info.programs?.length ?? 0 };
+    return { calls: info.render.calls, triangles: info.render.triangles, geometries: info.memory.geometries, textures: info.memory.textures, programs: info.programs?.length ?? 0, simMs: +this.simMsAvg.toFixed(2), renderMs: +this.renderMsAvg.toFixed(2) };
   }
 
   simulateInput(input: Record<string, unknown>, frames: number): void {
