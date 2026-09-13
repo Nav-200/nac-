@@ -128,6 +128,11 @@ export class Game {
   /** Rolling averages of CPU time per frame (ms) for the debug API. */
   private simMsAvg = 0;
   private renderMsAvg = 0;
+  /** Adaptive resolution scale (0.55 .. 1) driven by the measured frame rate. */
+  private renderScale = 1;
+  private adaptTimer = 0;
+  private adaptFrames = 0;
+  private adaptTime = 0;
 
   constructor(canvas: HTMLCanvasElement, private opts: GameOptions = {}) {
     this.canvas = canvas;
@@ -212,6 +217,7 @@ export class Game {
     this.player.setPosition(sp.x, sp.z, sp.yaw, this.world.groundHeightAt(sp.x, sp.z));
     this.cameraCtl.yaw = sp.yaw;
     this.cameraCtl.snapBehind(this.player);
+    this.seedStarterVehicles(sp.x, sp.z);
     this.loadSave();
     this.input.attach(this.canvas, (locked) => {
       store.set('pointerLocked', locked);
@@ -235,6 +241,24 @@ export class Game {
   }
 
   private onResize = (): void => this.scene.resize();
+
+  /** Park a few cars within a few steps of the spawn so the player can drive immediately. */
+  private seedStarterVehicles(px: number, pz: number): void {
+    const wanted: VehicleType[] = ['sedan', 'sports', 'suv', 'taxi'];
+    let placed = 0;
+    const spots = this.world.parkingSpots
+      .map((s, i) => ({ s, i, d: Math.hypot(s.x - px, s.z - pz) }))
+      .filter((e) => e.d > 6 && e.d < 70)
+      .sort((a, b) => a.d - b.d);
+    for (const e of spots) {
+      if (placed >= wanted.length) break;
+      const type = wanted[placed];
+      if (!this.traffic.isSpawnFree(type, e.s.x, e.s.z, e.s.yaw)) continue;
+      const v = this.traffic.spawnVehicle(type, e.s.x, e.s.z, e.s.yaw, 'parked');
+      v.controls.handbrake = true;
+      placed++;
+    }
+  }
 
   // ------------------------------------------------------------------ phases
   get phase(): GamePhase {
@@ -384,6 +408,16 @@ export class Game {
       store.pruneNotifications(this.time);
       store.commit();
     }
+    this.adaptTimer += dtReal;
+    this.adaptTime += dtReal;
+    this.adaptFrames++;
+    if (this.adaptTimer >= 1.2 && playing) {
+      this.adaptTimer = 0;
+      const fps = this.adaptFrames / Math.max(1e-3, this.adaptTime);
+      this.adaptFrames = 0;
+      this.adaptTime = 0;
+      this.adaptQuality(fps);
+    }
     this.saveTimer += dtReal;
     if (this.saveTimer > 30 && playing) {
       this.saveTimer = 0;
@@ -501,6 +535,36 @@ export class Game {
     this.views.setMissionMarkers(this.missions.markers, (m) => this.missions.isMarkerActive(m, this.time), (x, z) => this.world.groundHeightAt(x, z));
     if (this.player.stats.maxWanted < this.police.stars) this.player.stats.maxWanted = this.police.stars;
     if (this.player.vehicle && Math.abs(this.player.vehicle.speed) > 1) audio.setRadioAudible(true);
+  }
+
+  /** Trade resolution and draw distance for frame rate; recover them when there is headroom. */
+  private adaptQuality(fps: number): void {
+    const base = this.basePixelRatio();
+    let scale = this.renderScale;
+    if (fps < 40) scale = Math.max(0.55, scale - 0.12);
+    else if (fps < 52) scale = Math.max(0.55, scale - 0.06);
+    else if (fps > 58 && scale < 1) scale = Math.min(1, scale + 0.05);
+    if (Math.abs(scale - this.renderScale) > 0.001) {
+      this.renderScale = scale;
+      this.scene.renderer.setPixelRatio(base * scale);
+      this.scene.resize();
+    }
+    // Once resolution is at its floor, start pulling the world in.
+    const wr = this.worldRenderer;
+    if (fps < 40 && scale <= 0.56) {
+      wr.chunkDrawDistance = Math.max(420, wr.chunkDrawDistance - 90);
+      wr.propCullScale = Math.max(0.45, wr.propCullScale - 0.12);
+      if (fps < 28) this.scene.setShadows(false);
+    } else if (fps > 57) {
+      wr.chunkDrawDistance = Math.min(1050, wr.chunkDrawDistance + 45);
+      wr.propCullScale = Math.min(1, wr.propCullScale + 0.05);
+      if (this.settings.shadows && wr.propCullScale >= 1) this.scene.setShadows(true);
+    }
+  }
+
+  private basePixelRatio(): number {
+    const dpr = window.devicePixelRatio || 1;
+    return this.settings.quality === 'low' ? 1 : this.settings.quality === 'medium' ? Math.min(1.5, dpr) : Math.min(2, dpr);
   }
 
   private deathMessageFor(cause: string): string {
@@ -1125,7 +1189,8 @@ export class Game {
     this.input.sensitivity = this.settings.sensitivity;
     if (patch.shadows !== undefined) this.scene.setShadows(patch.shadows);
     if (patch.quality !== undefined) {
-      const pr = patch.quality === 'low' ? 1 : patch.quality === 'medium' ? Math.min(1.5, window.devicePixelRatio || 1) : Math.min(2, window.devicePixelRatio || 1);
+      this.renderScale = 1;
+      const pr = this.basePixelRatio();
       this.scene.renderer.setPixelRatio(pr);
       this.scene.resize();
       if (patch.quality === 'low') this.scene.setShadows(false);

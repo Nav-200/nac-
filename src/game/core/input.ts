@@ -98,6 +98,8 @@ export class InputManager {
   sensitivity = 1;
   /** Set true by tests to bypass DOM events. */
   simulated: Partial<InputState> | null = null;
+  /** True when the browser refused pointer lock (iframe without permission): fall back to free mouse look. */
+  lockFailed = false;
 
   private held = new Set<string>();
   private edges: Partial<InputState> = {};
@@ -147,9 +149,17 @@ export class InputManager {
     if (!this.canvas || this.pointerLocked) return;
     try {
       const p = (this.canvas as HTMLCanvasElement).requestPointerLock?.();
-      if (p && typeof (p as Promise<void>).catch === 'function') (p as Promise<void>).catch(() => {});
+      if (p && typeof (p as Promise<void>).catch === 'function') {
+        (p as Promise<void>).catch(() => {
+          this.lockFailed = true;
+        });
+      }
+      // If the lock never arrives (blocked iframe), fall back to free-look after a moment.
+      window.setTimeout(() => {
+        if (!this.pointerLocked) this.lockFailed = true;
+      }, 700);
     } catch {
-      /* ignore */
+      this.lockFailed = true;
     }
   }
 
@@ -261,7 +271,7 @@ export class InputManager {
   private onMouseDown = (e: MouseEvent): void => {
     if (!this.enabled) return;
     e.preventDefault();
-    if (!this.pointerLocked) {
+    if (!this.pointerLocked && !this.lockFailed) {
       this.requestPointerLock();
       return; // first click only captures the pointer
     }
@@ -273,7 +283,7 @@ export class InputManager {
   };
 
   private onMouseMove = (e: MouseEvent): void => {
-    if (!this.pointerLocked || !this.enabled) return;
+    if ((!this.pointerLocked && !this.lockFailed) || !this.enabled) return;
     this.accDX += e.movementX;
     this.accDY += e.movementY;
   };
@@ -286,7 +296,8 @@ export class InputManager {
 
   private onPointerLockChange = (): void => {
     this.pointerLocked = document.pointerLockElement === this.canvas;
-    if (!this.pointerLocked) this.mouseDown.clear();
+    if (this.pointerLocked) this.lockFailed = false;
+    else this.mouseDown.clear();
     this.onLockChange?.(this.pointerLocked);
   };
 }

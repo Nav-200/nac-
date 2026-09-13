@@ -145,8 +145,8 @@ interface PropVariant {
   cullDist: number;
 }
 
-const PROP_CULL_NEAR = 420;
-const PROP_CULL_FAR = 1500;
+const PROP_CULL_NEAR = 300;
+const PROP_CULL_FAR = 1100;
 
 function box(hex: number, w: number, h: number, d: number, x = 0, y = 0, z = 0, yaw = 0): THREE.BufferGeometry {
   const g = new THREE.BoxGeometry(w, h, d);
@@ -299,6 +299,9 @@ export class WorldRenderer {
   private lightPools: LightPool[] = [];
   private lampHeads: THREE.InstancedMesh[] = [];
   private night = 0;
+  /** Adaptive: shrunk when the frame budget is blown, restored when it is not. */
+  chunkDrawDistance = 1050;
+  propCullScale = 1;
   private dummy = new THREE.Object3D();
   private colorTmp = new THREE.Color();
   private lensBuf: THREE.InstancedMesh[] = [];
@@ -732,13 +735,13 @@ export class WorldRenderer {
       const dx = Math.max(0, Math.abs(camX - c.centerX) - BLOCK_PITCH * 1.5);
       const dz = Math.max(0, Math.abs(camZ - c.centerZ) - BLOCK_PITCH * 1.5);
       const d = Math.hypot(dx, dz);
-      const vis = d < 1300;
+      const vis = d < this.chunkDrawDistance;
       if (vis !== c.visible) {
         c.visible = vis;
         c.group.visible = vis;
       }
       if (!vis) continue;
-      for (const pm of c.propMeshes) pm.mesh.visible = d < pm.cullDist;
+      for (const pm of c.propMeshes) pm.mesh.visible = d < pm.cullDist * this.propCullScale;
     }
     for (const m of this.waterMats) {
       if (m.map) {
