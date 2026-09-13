@@ -1,5 +1,5 @@
 {
-  "name": "navQtracker Hardware Simulator",
-  "description": "A simulator for an ESP32-based question tracker with OLED display, push buttons, and IR sensor integration.",
+  "name": "Open City",
+  "description": "A GTA-style open-world 3D game for the browser: a big procedurally generated city where you can walk, drive, shoot, evade the police, and take on missions.",
   "requestFramePermissions": []
 }
